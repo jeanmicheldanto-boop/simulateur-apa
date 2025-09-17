@@ -1,0 +1,13 @@
+# config.yaml
+mtp: 1365.08
+
+plafonds_multiplicateurs:
+  1: 1.615
+  2: 1.306
+  3: 0.944
+  4: 0.630
+
+couts_horaires:
+  Emploi direct: 18.96
+  SAAD - mandataire: 21.00
+  SAAD - prestataire: 24.58
