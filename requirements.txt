@@ -1,2 +1,4 @@
 ﻿streamlit>=1.38
 pyyaml>=6.0.1
+reportlab==4
+
