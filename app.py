@@ -295,172 +295,181 @@ with st.expander("3) Choisir un mode d’intervention — heures possibles", exp
 # ──────────────────────────────────────────────────────────────────────────────
 # D. Export — PDF (CSV supprimé)
 # ──────────────────────────────────────────────────────────────────────────────
+from fpdf import FPDF
+from pathlib import Path
+import io, math, re
+from datetime import datetime
+
 with st.expander("Exporter mon estimation (PDF)", expanded=False):
     gir = int(st.session_state.get("gir_estime", 0))
     responses = st.session_state.get("aggir_responses", {}) or {}
     plafond = PLAF_COEF.get(gir, 0.0) * MTP if gir in PLAF_COEF else 0.0
     APA_versee = float(st.session_state.get("APA_versee", 0.0))
-
-    # Données pour la synthèse
     revenus_calc = st.session_state.get("R_calcule", None)
     A_effectif = st.session_state.get("A_effectif", None)
     T_taux = st.session_state.get("T_taux", None)
     P_part = st.session_state.get("P_participation", None)
-
-    # Items AGGIR nécessitant aide (valeur 1 ou 2)
     items_aide = [k for k, v in responses.items() if v in (1, 2)]
 
+    # ---------- Détection et chargement police Unicode (si dispo) ----------
+    BASE_DIR = Path(__file__).parent
+    TT_REG = next((p for p in [
+        BASE_DIR / "fonts" / "DejaVuSans.ttf",
+        BASE_DIR / "DejaVuSans.ttf",
+    ] if p.exists()), None)
+    TT_BLD = next((p for p in [
+        BASE_DIR / "fonts" / "DejaVuSans-Bold.ttf",
+        BASE_DIR / "DejaVuSans-Bold.ttf",
+    ] if p.exists()), None)
+
+    USE_UNICODE = TT_REG is not None and TT_BLD is not None
+
+    # ---------- Fallback texte (si pas de TTF) ----------
+    def to_latin1_safe(s: str) -> str:
+        # remplacements typographiques -> ASCII/Latin-1
+        repl = {
+            "—": "-", "–": "-", "-": "-",  # différents tirets
+            "“": '"', "”": '"', "’": "'", "‘": "'",
+            "…": "...", "\u00a0": " ", "•": "-", "€": "EUR",
+        }
+        for k, v in repl.items():
+            s = s.replace(k, v)
+        # supprimer/emplacer tout ce qui n'est pas latin-1 (é,à,ç OK)
+        s = s.encode("latin-1", "ignore").decode("latin-1")
+        # retirer les emojis éventuels
+        s = re.sub(r"[^\x00-\xff]", "", s)
+        return s
+
+    def T(s: str) -> str:
+        return s if USE_UNICODE else to_latin1_safe(s)
+
+    class PDF(FPDF):
+        def header(self):
+            self.set_font(FONT, "B", 16)
+            self.cell(0, 18, T("Estimation GIR & APA - Résumé"), ln=1)
+            self.set_font(FONT, "", 10)
+            self.cell(0, 14, T(f"Date : {datetime.now():%Y-%m-%d %H:%M}"), ln=1)
+            self.ln(2)
+
+        def section_title(self, txt):
+            self.set_font(FONT, "B", 13)
+            # ligne de titre + marge dessous
+            self.cell(0, 16, T(txt), ln=1)
+            self.ln(4)  # << ajoute 4 pt d'air
+
+        def kv(self, label, value):
+            self.set_font(FONT, "", 11)
+            self.cell(0, 12, T(f"- {label} : {value}"), ln=1)
+
+        def paragraph(self, txt):
+            self.set_font(FONT, "", 11)
+            self.multi_cell(0, 12, T(txt))
+
+        def draw_gauge(self, gir):
+            import math
+            page_w = self.w - 2*self.l_margin
+            cx = self.l_margin + page_w/2
+
+            # Descend le cadran: +40 pt après le titre de section
+            cy = self.get_y() + 40
+            R = 46  # un peu plus grand pour lisibilité
+
+            # Demi-cercle (polyline pour éviter les bugs d'arc)
+            self.set_draw_color(0, 0, 0)
+            self.set_line_width(0.8)
+            step_deg = 1.2
+            angs = [math.radians(a) for a in [180 - i*step_deg for i in range(int(180/step_deg)+1)]]
+            pts = [(cx + R*math.cos(a), cy + R*math.sin(a)) for a in angs]
+            for (x1,y1),(x2,y2) in zip(pts, pts[1:]):
+                self.line(x1, y1, x2, y2)
+
+            # Graduations + labels 1..6
+            self.set_font(FONT, "", 10)
+            for i, lab in enumerate([1, 2, 3, 4, 5, 6]):
+                ang = math.radians(180 - (i*(180/5)))  # 180→0 en 5 intervalles
+                # Traits
+                gx  = cx + (R-7)*math.cos(ang);  gy  = cy + (R-7)*math.sin(ang)
+                gx2 = cx + (R-14)*math.cos(ang); gy2 = cy + (R-14)*math.sin(ang)
+                self.line(gx, gy, gx2, gy2)
+                # Label centré sur la radiale
+                lx = cx + (R-22)*math.cos(ang)
+                ly = cy + (R-22)*math.sin(ang)
+                # text() ancre en bas-gauche ; on corrige un peu
+                self.text(lx-3, ly+3, T(str(lab)))
+
+            # Aiguille
+            if gir in [1, 2, 3, 4, 5, 6]:
+                ang = math.radians(180 - ((gir-1)*(180/5)))
+                nx = cx + (R-18)*math.cos(ang); ny = cy + (R-18)*math.sin(ang)
+                self.set_line_width(1.4)
+                self.line(cx, cy, nx, ny)
+                self.ellipse(cx-1.8, cy-1.8, 3.6, 3.6, style="F")
+
+            # Légende + avance curseur (marge sous le cadran)
+            self.set_font(FONT, "", 12)
+            self.text(cx-58, cy + R/2 + 10, T(f"GIR estimé : {gir if gir else '-'}"))
+            self.set_y(cy + R/2 + 24)
+
+            
+
+    # ---------- Créer PDF ----------
+    pdf = PDF(orientation="P", unit="pt", format="A4")
+    pdf.set_auto_page_break(auto=True, margin=36)
+
+    if USE_UNICODE:
+        pdf.add_font("DejaVu", "", str(TT_REG), uni=True)
+        pdf.add_font("DejaVu", "B", str(TT_BLD), uni=True)
+        FONT = "DejaVu"
+    else:
+        FONT = "Helvetica"  # + nettoyage via T()
+
     try:
-        import io, math
-        from datetime import datetime
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen import canvas
-        from reportlab.lib.units import cm
-        from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.ttfonts import TTFont
+        pdf.add_page()
 
-        # Police Unicode si dispo
-        try:
-            pdfmetrics.registerFont(TTFont("DejaVu", "DejaVuSans.ttf"))
-            FONT_BASE = "DejaVu"
-        except Exception:
-            FONT_BASE = "Helvetica"
+        pdf.section_title("Votre GIR (cadran indicatif)")
+        pdf.draw_gauge(gir)
 
-        buffer = io.BytesIO()
-        c = canvas.Canvas(buffer, pagesize=A4)
-        W, H = A4
-        left, right = 2*cm, W - 2*cm
-        y = H - 2*cm
-
-        # Helpers qui retournent y (pas de nonlocal)
-        def h1(c, text, left, y):
-            c.setFont(FONT_BASE, 16); c.drawString(left, y, text)
-            return y - 1.0*cm
-
-        def h2(c, text, left, y):
-            c.setFont(FONT_BASE, 13); c.drawString(left, y, text)
-            return y - 0.6*cm
-
-        def p(c, text, left, y, leading=0.52*cm):
-            c.setFont(FONT_BASE, 11)
-            for line in text.split("\n"):
-                c.drawString(left, y, line)
-                y -= leading
-            return y
-
-        def kv(c, label, value, left, y):
-            c.setFont(FONT_BASE, 11)
-            c.drawString(left, y, f"- {label} : {value}")
-            return y - 0.5*cm
-
-        # ── En-tête
-        y = h1(c, "Estimation GIR & APA — Résumé", left, y)
-        c.setFont(FONT_BASE, 10)
-        c.drawString(left, y, f"Date : {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        y -= 0.7*cm
-
-        # ── Cadran GIR (centré + clair au-dessus et en-dessous)
-        y = h2(c, "Votre GIR (cadran indicatif)", left, y)
-
-        R = 3.8*cm          # rayon (tu peux remettre 4.0*cm si tu veux plus grand)
-        clearance_top = 1.0*cm   # marge au-dessus du cadran (évite de "mordre" le titre)
-        margin_bottom = 1.4*cm   # marge sous le cadran
-
-        # centre horizontal au milieu de la zone utile
-        cx = (left + right) / 2.0
-        # centre vertical : on met le haut du cadran (cy + R) à y - clearance_top
-        cy = y - (R + clearance_top)
-
-        # Saut de page si besoin
-        if cy - R - margin_bottom < 1.8*cm:
-            c.showPage()
-            y = H - 2*cm
-            c.setFont(FONT_BASE, 10)
-            c.drawString(left, y, f"Date : {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-            y -= 0.7*cm
-            y = h2(c, "Votre GIR (cadran indicatif)", left, y)
-            cy = y - (R + clearance_top)
-
-        # Demi-cercle + graduations
-        c.setLineWidth(2)
-        c.arc(cx - R, cy - R, cx + R, cy + R, startAng=180, extent=-180)
-
-        import math
-        for i, label in enumerate([1, 2, 3, 4, 5, 6]):
-            ang = math.radians(180 - (i * (180 / 5)))
-            gx = cx + (R - 0.4*cm) * math.cos(ang)
-            gy = cy + (R - 0.4*cm) * math.sin(ang)
-            gx2 = cx + (R - 0.8*cm) * math.cos(ang)
-            gy2 = cy + (R - 0.8*cm) * math.sin(ang)
-            c.setLineWidth(1); c.line(gx, gy, gx2, gy2)
-            lx = cx + (R - 1.2*cm) * math.cos(ang)
-            ly = cy + (R - 1.2*cm) * math.sin(ang)
-            c.setFont(FONT_BASE, 10); c.drawCentredString(lx, ly, str(label))
-
-        # Aiguille
-        if gir in [1, 2, 3, 4, 5, 6]:
-            ang = math.radians(180 - ((gir - 1) * (180 / 5)))
-            nx = cx + (R - 1.0*cm) * math.cos(ang)
-            ny = cy + (R - 1.0*cm) * math.sin(ang)
-            c.setLineWidth(3); c.line(cx, cy, nx, ny)
-            c.circle(cx, cy, 0.12*cm, fill=1)
-
-        # Légende centrée
-        c.setFont(FONT_BASE, 12)
-        c.drawCentredString(cx, cy - (R + 0.8*cm), f"GIR estimé : {gir if gir else '—'}")
-
-        # Avance du curseur sous le cadran
-        y = cy - (R + margin_bottom)
-
-
-        # ── AGGIR — items nécessitant une aide
-        y = h2(c, "AGGIR — principaux éléments nécessitant une aide", left, y)
+        pdf.section_title("AGGIR - principaux éléments nécessitant une aide")
         if items_aide:
-            c.setFont(FONT_BASE, 11)
-            col_w = (right - left) / 2
-            col_left_x = left
-            col_right_x = left + col_w
-            x = col_left_x
-            line_h = 0.48*cm
-            count = 0
+            # colonnes simples
+            col_w = (pdf.w - 2*pdf.l_margin) / 2
+            left_x = pdf.l_margin
+            right_x = pdf.l_margin + col_w
+            y_start = pdf.get_y()
+            line_h = 14
             half = (len(items_aide) + 1) // 2
-            y_start = y
-            for idx, item in enumerate(items_aide):
-                c.drawString(x, y, f"• {item}")
-                y -= line_h
-                count += 1
-                if count == half and len(items_aide) > 1:
-                    x = col_right_x
-                    y = y_start
-            y -= 0.4*cm
+            for i, item in enumerate(items_aide):
+                x = left_x if i < half else right_x
+                y = y_start + (i if i < half else i - half)*line_h
+                pdf.text(x, y, T(f"- {item}"))
+            pdf.set_y(y_start + max(half, len(items_aide)-half)*line_h + 8)
         else:
-            y = p(c, "Aucun item signalé (ou évaluation non remplie).", left, y)
+            pdf.paragraph("Aucun item signale (ou evaluation non remplie).")
 
-        # ── Synthèse financière
-        y = h2(c, "Synthèse financière (mensuelle)", left, y)
-        y = kv(c, "Ressources prises en compte",
-               f"{revenus_calc:,.0f} €" if revenus_calc is not None else "—", left, y)
-        y = kv(c, "Plafond APA (GIR)", f"{plafond:,.0f} €", left, y)
-        y = kv(c, "Taux de participation",
-               f"{T_taux*100:.1f} %" if T_taux is not None else "—", left, y)
-        y = kv(c, "Participation (reste à charge)",
-               f"{P_part:,.0f} €" if P_part is not None else "—", left, y)
-        y = kv(c, "APA estimée (après participation)", f"{APA_versee:,.0f} €", left, y)
+        pdf.section_title("Synthese financiere (mensuelle)")
+        pdf.kv("Ressources prises en compte", f"{revenus_calc:,.0f} EUR" if revenus_calc is not None else "—")
+        pdf.kv("Plafond APA (GIR)", f"{plafond:,.0f} EUR")
+        pdf.kv("Taux de participation", f"{T_taux*100:.1f} %" if T_taux is not None else "—")
+        pdf.kv("Participation (reste a charge)", f"{P_part:,.0f} EUR" if P_part is not None else "—")
+        pdf.kv("APA estimee (apres participation)", f"{APA_versee:,.0f} EUR")
         if A_effectif is not None:
-            y = kv(c, "Plan d’aide retenu (A)", f"{A_effectif:,.0f} €", left, y)
+            pdf.kv("Plan d’aide retenu (A)", f"{A_effectif:,.0f} EUR")
 
-        y -= 0.3*cm
-        y = p(c,
-              "Notes :\n"
-              "- Estimation indicative à confirmer par une évaluation à domicile.\n"
-              "- Les montants et heures peuvent varier selon les pratiques départementales.\n"
-              "- Le montant d'aide présenté correspond à un **plafond** ; l'aide réelle dépendra du plan accepté.",
-              left, y, leading=0.5*cm)
+        pdf.set_font(FONT, "", 9)
+        pdf.ln(6)
+        pdf.paragraph(
+            "Notes :\n"
+            "- Estimation indicative a confirmer par une evaluation a domicile.\n"
+            "- Les montants et heures peuvent varier selon les pratiques departementales.\n"
+            "- Le montant d'aide presente correspond a un plafond ; l'aide reelle dependra du plan accepte."
+        )
 
-        c.showPage()
-        c.save()
-        buffer.seek(0)
-        pdf_bytes = buffer.read()
+        out = pdf.output(dest="S")  # fpdf2 renvoie un bytearray (ou bytes)
+        if isinstance(out, (bytes, bytearray)):
+            pdf_bytes = bytes(out)          # standardise en bytes
+        else:
+            # Compat anciennes versions qui renvoient str
+            pdf_bytes = out.encode("latin1")
 
         st.download_button(
             "Télécharger le PDF détaillé",
@@ -469,8 +478,8 @@ with st.expander("Exporter mon estimation (PDF)", expanded=False):
             mime="application/pdf"
         )
     except Exception as e:
-        st.error(f"Impossible de générer le PDF (ReportLab manquant ?): {e}")
-        st.info("Astuce : utilisez **Imprimer → Enregistrer en PDF** depuis le navigateur.")
+        st.error(f"Impossible de générer le PDF : {e}")
+        st.info("Sinon : Imprimer → Enregistrer en PDF depuis le navigateur.")
 
 
 
