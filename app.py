@@ -257,41 +257,55 @@ with st.expander("3) Choisir un mode d’intervention — heures possibles", exp
     if "gir_estime" not in st.session_state:
         st.warning("Commencez par estimer le GIR et la participation (sections 1 et 2).")
     else:
-        APA_versee = float(st.session_state.get("APA_versee", 0.0))
         couts_horaires = CFG.get("couts_horaires", DEFAULT_CFG["couts_horaires"])
+
+        # 👉 Plan d’aide total (A), PAS l’APA versée
+        A_total = float(st.session_state.get("A_effectif", 0.0))
+        if A_total <= 0:
+            # repli : reconstituer si possible
+            APA_versee = float(st.session_state.get("APA_versee", 0.0))
+            P_part = float(st.session_state.get("P_participation", 0.0))
+            A_total = max(APA_versee + P_part, 0.0)
 
         mode = st.selectbox("Mode d'intervention", list(couts_horaires.keys()), index=0)
         cout_h = float(couts_horaires.get(mode, 0.0))
 
-        base_heures = 0.0 if cout_h <= 0 else APA_versee / cout_h
-        # Fourchette 70–90 %, arrondie à l'entier (pas de virgule)
+        base_heures = 0.0 if cout_h <= 0 else A_total / cout_h
+        # Fourchette 70–90 %, arrondie à l'entier
         h_min = int(max(0, round(base_heures * 0.70)))
         h_max = int(max(h_min, round(base_heures * 0.90)))
 
-        st.metric("APA estimée (après participation)", f"{APA_versee:,.0f} € / mois")
-        st.metric(f"Heures possibles en {mode}", f"≈ {h_min}–{h_max} h / mois",
-                  help=f"Base: APA ÷ coût horaire ({cout_h:.2f} €/h), puis fourchette 70–90 %.")
+        # Affichages
+        st.metric("Plan d’aide retenu (A)", f"{A_total:,.0f} € / mois")
+        st.metric(
+            f"Heures possibles en {mode}",
+            f"≈ {h_min}–{h_max} h / mois",
+            help=f"Base : plan d’aide (A) ÷ coût horaire ({cout_h:.2f} €/h), puis fourchette 70–90 %."
+        )
+        # --- Rappel participation / reste à charge ---
+        APA_versee = float(st.session_state.get("APA_versee", 0.0))
+        P_part = float(st.session_state.get("P_participation", 0.0))
 
-        # Paragraphe explicatif sur les modes
+        if P_part > 0:
+            st.caption(f"Rappel : dont **{P_part:,.0f} €** de reste à charge (participation).")
+        else:
+            st.caption("Rappel : aucune participation estimée (reste à charge 0 €).")
+        # Paragraphe explicatif sur les modes (inchangé)
         st.markdown(
             "**Lorsque l’APA est accordée, vous choisissez un mode d’intervention parmi 3 :**\n"
             "- **Emploi direct** : vous embauchez directement un(e) aide à domicile (ex. via **CESU**).\n"
-            "- **Mandataire** : vous faites appel à une **structure** (souvent association) qui vous accompagne "
-            "dans les démarches, mais **vous demeurez l’employeur**.\n"
-            "- **Prestataire** : vous choisissez une **structure** (association, CCAS, entreprise privée) qui "
-            "**salarie directement** les aides à domicile.\n\n"
+            "- **Mandataire** : une **structure** vous accompagne, mais **vous restez l’employeur**.\n"
+            "- **Prestataire** : la **structure** emploie directement les aides à domicile.\n\n"
             "_Les plans d’aide indicatifs sont calculés à partir de moyennes observées (plafonds, tarifs). "
             "Ils peuvent varier selon les situations individuelles et les pratiques départementales._"
         )
 
-        # Mention après l’affichage des heures/mois
         st.info(
             "Vous restez **libre des heures** acceptées dans le plan d’aide et de celles **mobilisées chaque mois**. "
             "Les aides sont versées selon le **tarif pris en charge par le Département**. "
             "Si le service ou l’employé applique un **tarif supérieur**, un **complément** peut s’ajouter "
-            "(en général quelques euros par mois). **N’hésitez pas à nous solliciter sur ce point.**"
+            "(quelques euros par mois en général)."
         )
-
 # ──────────────────────────────────────────────────────────────────────────────
 # D. Export — PDF (CSV supprimé)
 # ──────────────────────────────────────────────────────────────────────────────
